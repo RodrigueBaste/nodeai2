@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mongpt": {
+      "command": "node",
+      "args": [
+        "/home/yann/Documents/FORMATIONS/NODE/nodeai2/src/mcp/server.js"
+      ],
+      "env": {
+        "OLLAMA_URL": "http://localhost:11434",
+        "EMBED_MODEL": "nomic-embed-text"
+      }
+    }
+  }
+}
