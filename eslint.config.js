@@ -3,7 +3,10 @@ import tseslint from "typescript-eslint";
 import prettierConfig from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 
-export default tseslint.config(
+export default [
+  {
+    ignores: ["dist/**/*", "node_modules/**/*"],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -24,4 +27,4 @@ export default tseslint.config(
       },
     },
   },
-);
+];

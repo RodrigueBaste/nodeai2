@@ -74,11 +74,11 @@ export const toolDefinitions = [
 const argSchemas = {
   get_weather: z.object({ city: z.string().min(1) }),
   calculator: z.object({ expression: z.string().min(1) }),
-  get_datetime: z.object({}).passthrough(),
+  get_datetime: z.object({}),
   read_local_file: z.object({ filename: z.string().min(1) }),
 };
 
-type ToolName = keyof typeof argSchemas;
+export type ToolName = keyof typeof argSchemas;
 
 // ── Implémentations ──────────────────────────────────────────────────────────
 const get_weather = async ({ city }: { city: string }): Promise<string> => {

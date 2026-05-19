@@ -85,27 +85,15 @@ export const ragRoute = async (app: FastifyInstance) => {
 
       const systemMessage = `${RAG_SYSTEM_PROMPT}\n\nContexte :\n${contextBlock}`;
 
+      const { OllamaAdapter } =
+        await import("../infrastructure/adapters/OllamaAdapter.js");
+      const { ChatUseCase } =
+        await import("../application/use_cases/ChatUseCase.js");
+
+      const llmProvider = new OllamaAdapter(OLLAMA_URL, MODEL);
+      const useCase = new ChatUseCase(llmProvider);
+
       const controller = new AbortController();
-      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            { role: "system", content: systemMessage },
-            { role: "user", content: message },
-          ],
-          stream: true,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        request.log.error({ status: res.status, body: text }, "Ollama error");
-        return reply.status(502).send({ error: "Ollama request failed" });
-      }
-
       request.socket.once("close", () => controller.abort());
 
       reply.raw.writeHead(200, {
@@ -127,38 +115,22 @@ export const ragRoute = async (app: FastifyInstance) => {
         })),
       });
 
-      try {
-        if (!res.body) return;
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
+      const sender = {
+        sendToken: (token: string) =>
+          sendEvent({ type: "token", value: token }),
+        sendError: (message: string) => sendEvent({ type: "error", message }),
+        sendDone: () => sendEvent({ type: "done" }),
+        logError: (err: unknown, msg: string) => request.log.error(err, msg),
+      };
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+      const ollamaMessages = [
+        { role: "system" as const, content: systemMessage },
+        { role: "user" as const, content: message },
+      ];
 
-          const text = decoder.decode(value, { stream: true });
-          const lines = text.split("\n").filter(Boolean);
+      await useCase.executeStream(ollamaMessages, controller.signal, sender);
 
-          for (const line of lines) {
-            try {
-              const parsed = JSON.parse(line);
-              if (parsed.message?.content) {
-                sendEvent({ type: "token", value: parsed.message.content });
-              }
-              if (parsed.done) sendEvent({ type: "done" });
-            } catch {
-              // fragment
-            }
-          }
-        }
-      } catch (err: unknown) {
-        if (err instanceof Error && err.name !== "AbortError") {
-          request.log.error(err, "RAG streaming error");
-          sendEvent({ type: "error", message: err.message });
-        }
-      } finally {
-        reply.raw.end();
-      }
+      reply.raw.end();
     },
   );
 };

@@ -1,10 +1,4 @@
 import { FastifyInstance } from "fastify";
-// import { z } from "zod";
-import {
-  Conversation,
-  ConversationWithCount,
-  Message,
-} from "../types/database.js";
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const MODEL = process.env.OLLAMA_MODEL ?? "llama3.2";
@@ -45,9 +39,7 @@ export const conversationsRoute = async (app: FastifyInstance) => {
       },
     },
     async (request, reply) => {
-      const conv = app.stmts.createConv.get(
-        "Nouvelle conversation",
-      ) as Conversation;
+      const conv = app.stmts.createConv.get("Nouvelle conversation");
       return reply.status(201).send(conv);
     },
   );
@@ -61,7 +53,7 @@ export const conversationsRoute = async (app: FastifyInstance) => {
       },
     },
     async () => {
-      return app.stmts.listConvs.all() as ConversationWithCount[];
+      return app.stmts.listConvs.all();
     },
   );
 
@@ -85,12 +77,10 @@ export const conversationsRoute = async (app: FastifyInstance) => {
       },
     },
     async (request, reply) => {
-      const conv = app.stmts.getConv.get(request.params.id) as
-        | Conversation
-        | undefined;
+      const conv = app.stmts.getConv.get(request.params.id);
       if (!conv)
         return reply.notFound(`Conversation ${request.params.id} introuvable`);
-      const messages = app.stmts.getMessages.all(conv.id) as Message[];
+      const messages = app.stmts.getMessages.all(conv.id);
       return { ...conv, messages };
     },
   );
@@ -129,12 +119,12 @@ export const conversationsRoute = async (app: FastifyInstance) => {
     },
     async (request, reply) => {
       const convId = request.params.id;
-      const conv = app.stmts.getConv.get(convId) as Conversation | undefined;
+      const conv = app.stmts.getConv.get(convId);
       if (!conv) return reply.notFound(`Conversation ${convId} introuvable`);
 
       const { message } = request.body;
 
-      const history = app.stmts.getMessages.all(convId) as Message[];
+      const history = app.stmts.getMessages.all(convId);
       if (history.length === 0) {
         app.db
           .prepare("UPDATE conversations SET title = ? WHERE id = ?")
@@ -143,31 +133,11 @@ export const conversationsRoute = async (app: FastifyInstance) => {
 
       app.stmts.addMessage.get(convId, "user", message);
 
-      const updatedHistory = app.stmts.getMessages.all(convId) as Message[];
+      const updatedHistory = app.stmts.getMessages.all(convId);
       const ollamaMessages = updatedHistory.map((m) => ({
-        role: m.role,
+        role: m.role as "user" | "assistant" | "system",
         content: m.content,
       }));
-
-      const controller = new AbortController();
-      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: MODEL,
-          messages: ollamaMessages,
-          stream: true,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        request.log.error({ status: res.status, body: text }, "Ollama error");
-        return reply.status(502).send({ error: "Ollama request failed" });
-      }
-
-      request.raw.once("close", () => controller.abort());
 
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -179,43 +149,35 @@ export const conversationsRoute = async (app: FastifyInstance) => {
       const sendEvent = (payload: unknown) =>
         reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
 
-      let fullResponse = "";
-      try {
-        if (!res.body) return;
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
+      const sender = {
+        sendToken: (token: string) =>
+          sendEvent({ type: "token", value: token }),
+        sendError: (message: string) => sendEvent({ type: "error", message }),
+        sendDone: () => sendEvent({ type: "done" }),
+        logError: (err: unknown, msg: string) => request.log.error(err, msg),
+      };
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+      const { OllamaAdapter } =
+        await import("../infrastructure/adapters/OllamaAdapter.js");
+      const { ChatUseCase } =
+        await import("../application/use_cases/ChatUseCase.js");
+      const llmProvider = new OllamaAdapter(OLLAMA_URL, MODEL);
+      const useCase = new ChatUseCase(llmProvider);
 
-          const text = decoder.decode(value, { stream: true });
-          const lines = text.split("\n").filter(Boolean);
+      const controller = new AbortController();
+      request.raw.once("close", () => controller.abort());
 
-          for (const line of lines) {
-            try {
-              const parsed = JSON.parse(line);
-              if (parsed.message?.content) {
-                fullResponse += parsed.message.content;
-                sendEvent({ type: "token", value: parsed.message.content });
-              }
-              if (parsed.done) {
-                app.stmts.addMessage.get(convId, "assistant", fullResponse);
-                sendEvent({ type: "done" });
-              }
-            } catch {
-              // fragment handling
-            }
-          }
-        }
-      } catch (err: unknown) {
-        if (err instanceof Error && err.name !== "AbortError") {
-          request.log.error(err, "Streaming error");
-          sendEvent({ type: "error", message: err.message });
-        }
-      } finally {
-        reply.raw.end();
+      const fullResponse = await useCase.executeStream(
+        ollamaMessages,
+        controller.signal,
+        sender,
+      );
+
+      if (fullResponse) {
+        app.stmts.addMessage.get(convId, "assistant", fullResponse);
       }
+
+      reply.raw.end();
     },
   );
 };
