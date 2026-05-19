@@ -6,3 +6,6 @@ node_modules/
 .env.local
 dist/
 .gitnexus
+AGENTS.md 
+CLAUDE.md
+.claude/
